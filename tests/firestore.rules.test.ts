@@ -11,7 +11,7 @@ import {
 } from '@firebase/rules-unit-testing';
 
 const databaseId = 'ai-studio-e316c560-bff4-411c-9095-0c6d6acbe77f';
-const projectId = 'demo-chatflow';
+const projectId = 'demo-chatflow-rules-test';
 let environment: RulesTestEnvironment;
 let chatId: string;
 
@@ -128,15 +128,15 @@ test('chat attachments are restricted to participants and validated on upload', 
 
   await assertSucceeds(attachment.put(new Uint8Array([137, 80, 78, 71]), {
     contentType: 'image/png',
-  }));
+  }).then(() => undefined));
   await assertSucceeds(attachment.getMetadata());
   await assertFails(outsider.ref(attachmentPath).getMetadata());
   await assertFails(bob.ref(`chats/${chatId}/alice/other.png`).put(new Uint8Array([1]), {
     contentType: 'image/png',
-  }));
+  }).then(() => undefined));
   await assertFails(bob.ref(`chats/${chatId}/bob/invalid.txt`).put(new Uint8Array([1]), {
     contentType: 'text/plain',
-  }));
+  }).then(() => undefined));
 });
 
 async function seedStorageChat(id: string): Promise<void> {

@@ -9,7 +9,7 @@
     "start": "serve -s dist",
     "preview": "vite preview",
     "lint": "tsc --noEmit",
-    "test:rules": "firebase emulators:exec --only firestore,storage --project demo-chatflow \"tsx --test tests/firestore.rules.test.ts\""
+    "test:rules": "firebase emulators:exec --only firestore,storage --project demo-chatflow-rules-test \"tsx --test tests/firestore.rules.test.ts\""
   },
   "dependencies": {
     "@react-three/drei": "^10.7.7",

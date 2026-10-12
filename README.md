@@ -79,7 +79,7 @@ npm run test:rules            # Firestore security rules tests using the emulato
 npm run build --prefix functions  # Compile Firebase Functions
 ```
 
-`npm run test:rules` starts the Firestore emulator and checks participant-only chat access, message creation, sender-only edits/deletes, and protection against client-side membership changes. `npm run lint` and `npm run build` validate the client; `npm --prefix functions run build` validates the callable Functions code.
+`npm run test:rules` starts the Firestore and Storage emulators and checks participant-only chat access and attachments, message creation, sender-only edits/deletes, upload validation, and protection against client-side membership changes. `npm run lint` and `npm run build` validate the client; `npm --prefix functions run build` validates the callable Functions code.
 
 ## Data and security notes
 

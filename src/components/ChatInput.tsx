@@ -37,6 +37,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
   const timerRef = useRef<NodeJS.Timeout | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
   const discardRecordingRef = useRef(false);
+  const recordingDurationRef = useRef(0);
 
   // Load draft
   useEffect(() => {
@@ -101,8 +102,8 @@ export const ChatInput: React.FC<ChatInputProps> = ({
       mediaRecorder.onstop = async () => {
         const audioBlob = new Blob(audioChunksRef.current, { type: 'audio/webm' });
         try {
-          if (!discardRecordingRef.current && recordingTime > 1) {
-            await onSendMedia(audioBlob, recordingTime);
+          if (!discardRecordingRef.current && recordingDurationRef.current > 1) {
+            await onSendMedia(audioBlob, recordingDurationRef.current);
           }
         } catch (error) {
           console.error('Failed to send the voice message.', error);
@@ -117,8 +118,10 @@ export const ChatInput: React.FC<ChatInputProps> = ({
       mediaRecorder.start();
       setIsRecording(true);
       setRecordingTime(0);
+      recordingDurationRef.current = 0;
       timerRef.current = setInterval(() => {
         setRecordingTime(prev => prev + 1);
+        recordingDurationRef.current += 1;
       }, 1000);
     } catch (err) {
       console.error("Recording error:", err);
