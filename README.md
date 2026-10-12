@@ -1,107 +1,103 @@
-# WhatsApp-4 (React + Vite + Firebase + Gemini)
+# ChatFlow
 
-## Overview
-WhatsApp-4 is a React (TypeScript) web application built with Vite. It integrates:
-- **Firebase** (Auth, Firestore, Storage, Messaging)
-- **Google Gemini** via the `@google/genai` SDK for AI features (chat summarization, smart replies, task extraction, etc.)
-- **TailwindCSS** for styling
+ChatFlow is a React 19 + TypeScript messaging client built with Vite and Firebase. Google sign-in, chat history, presence, calls, profile data, and attachments use Firebase Auth, Cloud Firestore, and Cloud Storage. AI writing tools run in an authenticated Firebase callable function; the Gemini API key is never sent to the browser.
 
-## Tech Stack
-- **Frontend:** React 19 + TypeScript + Vite
-- **Styling:** TailwindCSS
-- **AI:** `@google/genai`
-- **Backend-as-a-service:** Firebase SDK
-- **Build:** Vite
+## Requirements
 
-## Prerequisites
-- Node.js (recommended: LTS)
-- A Firebase project
-- A Gemini API key
+- Node.js 20 or newer
+- A Firebase project with Google sign-in enabled
+- Firebase CLI (`npm install --global firebase-tools`)
+- Google Gemini API key (for AI tools)
+- Google Cloud CLI (only if configuring Storage CORS for protected media)
 
-## Setup
-### 1) Install dependencies
+## Local setup
+
 ```bash
-npm install
-```
-
-### 2) Configure Firebase
-This project expects a Firebase config file:
-- `firebase-applet-config.json`
-
-That file should contain the standard Firebase web config values, including:
-- `projectId`
-- `appId`
-- `apiKey`
-- `authDomain`
-- `firestoreDatabaseId`
-- `storageBucket`
-- `messagingSenderId`
-
-> The app reads it in `src/lib/firebase.ts`.
-
-### 3) Configure Gemini API key
-Set an environment variable:
-- `GEMINI_API_KEY`
-
-The Vite config injects it at build time (see `vite.config.ts`).
-
-#### Using a `.env` file (recommended)
-Create a file named `.env` in the project root:
-```bash
-GEMINI_API_KEY=your_gemini_api_key_here
-```
-
-### 4) (Optional) Firebase Emulator / Rules
-This repo includes:
-- `firestore.rules`
-- `storage.rules`
-
-You can adjust them to match your Firestore/Storage usage.
-
-## Run Locally
-### Development server
-```bash
+npm ci
+npm ci --prefix functions
+npm run lint
+npm run build
 npm run dev
 ```
 
-By default it runs on:
-- **http://localhost:3000**
+The development server is available at `http://localhost:3000`.
 
-### Production build
+The Firebase web SDK configuration is read from `firebase-applet-config.json`. Firebase web configuration values, including the web API key, are identifiers used by the client and are not authorization controls; access is enforced by Firebase Authentication and the rules in this repository. Never put server credentials, service account keys, or the Gemini API key in this file or in a `VITE_*` variable.
+
+## Firebase configuration
+
+1. Enable **Google** under Firebase Authentication → Sign-in method, and add your local and deployed app domains to the authorized domains list.
+2. Create the Firestore database named `ai-studio-e316c560-bff4-411c-9095-0c6d6acbe77d`, or update the database ID consistently in `firebase.json`, `firebase-applet-config.json`, `functions/src/index.ts`, and `storage.rules`.
+3. Ensure Firebase Storage is enabled for the configured bucket.
+4. Select the Firebase project in the CLI:
+
+   ```bash
+   firebase login
+   firebase use <your-firebase-project-id>
+   ```
+
+5. Set the Gemini key as a Firebase Functions secret (not a Vite environment variable):
+
+   ```bash
+   firebase functions:secrets:set GEMINI_API_KEY
+   ```
+
+6. Deploy Firestore and Storage rules and the callable function:
+
+   ```bash
+   firebase deploy --only firestore:rules,storage,functions
+   ```
+
+   The first Storage rules deployment may ask to enable Cloud Firestore access from Storage rules. Approve it so chat media can be restricted to conversation participants.
+
+7. Configure Cloud Storage CORS so signed-in clients can download protected media through the Firebase SDK:
+
+   ```bash
+   gcloud storage buckets update gs://<your-storage-bucket> --cors-file=storage.cors.json
+   ```
+
+   Set the production web origin in `storage.cors.json` instead of the wildcard before deploying to production.
+
+The checked-in `firebase-applet-config.json` is project-specific client configuration. For a different Firebase project, replace it with that project's web app configuration and update the Firestore database ID references above. Do not commit Firebase Admin service-account credentials.
+
+## Environment variables
+
+`.env.example` documents the server-only Gemini secret setup. The app does not read a Gemini key from Vite. Local Functions emulation should use the Firebase CLI's local secret support; production secrets are provisioned with `firebase functions:secrets:set`.
+
+Optional public Firebase Cloud Messaging is not configured as a push-notification workflow. The app does not request browser notification permission on sign-in.
+
+## Available commands
+
 ```bash
-npm run build
+npm run dev                 # Vite development server
+npm run lint                # TypeScript check
+npm run build               # Production web build
+npm run preview             # Preview the production build locally
+npm run start               # Serve the built app
+npm run build --prefix functions  # Compile Firebase Functions
 ```
 
-### Preview / Serve built app
-```bash
-npm run start
-```
+There is no test suite in the repository yet. `npm run lint` and `npm run build` are the current automated checks.
 
-## Lint / Typecheck
+## Data and security notes
+
+- Firestore rules restrict chats, messages, typing, whiteboard strokes, calls, and signaling data to authenticated participants. Message edits and deletions are limited to the sender.
+- New chat attachments are stored as Storage object paths, not public download-token URLs. The client downloads them through Firebase Storage after authentication; Storage rules check membership in the configured named Firestore database.
+- Existing messages that already contain Firebase download-token URLs remain readable for backwards compatibility. Those old URLs are bearer links; if one has been shared outside the conversation, rotate or remove that file's download token in Firebase Storage.
+- On a user's next sign-in, the client moves legacy profile email and notification tokens into that user's private subcollection and removes them from the publicly discoverable profile document. Users who have not signed in since this change still need this migration.
+- AI callable requests require Firebase authentication and are limited to 10 requests per minute and 100 per day per user. Chat message writes use Firebase Security Rules for membership and schema validation; application-level per-user message rate limiting is not yet implemented.
+- This app does not implement end-to-end encryption. Firebase access controls protect data in transit and at rest as provided by the configured Firebase services.
+
+## Deployment
+
+Build and deploy the web app using your preferred static hosting provider:
+
 ```bash
+npm ci
+npm ci --prefix functions
 npm run lint
+npm run build
+firebase deploy --only firestore:rules,storage,functions
 ```
 
-## Project Structure (high-level)
-- `src/components/` — UI components (login, chat, sidebar, modals, whiteboard, etc.)
-- `src/context/` — React contexts for auth/calling state
-- `src/services/` — Firebase/AI service layer
-  - `geminiService.ts` — Gemini operations
-  - `chatService.ts`, `callService.ts`, `whiteboardService.ts`
-- `src/lib/` — shared helpers (`firebase.ts`, `utils.ts`, `errorHandler.ts`)
-
-## Notes
-- AI features may return fallback messages if `GEMINI_API_KEY` is missing.
-- Firebase connection issues may appear if Firestore connectivity is not configured.
-
-## Firebase + Gemini Endpoints (what the app does)
-`src/services/geminiService.ts` provides:
-- **summarizeChat** — summarizes a chat into a concise paragraph
-- **suggestSmartReplies** — returns 3 JSON smart replies
-- **generateTaskDetails** — extracts a JSON `{ title, category }`
-- **improveWriting** — rewrites messages to a selected tone
-- **transcribeAudio** — transcribes `audio/webm` base64 audio
-
-## Author
-Built as part of the WhatsApp-4 assignment/workflow.
-
+Configure the host to serve the generated `dist/` directory and rewrite application routes to `index.html`. Deploy the Firebase rules and Functions to the same project as the client configuration.

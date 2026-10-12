@@ -2,7 +2,6 @@ export interface User {
   uid: string;
   displayName: string;
   photoURL: string;
-  email: string;
   lastSeen: any;
   isOnline: boolean;
   username?: string;
@@ -22,7 +21,6 @@ export interface User {
     showLastSeen: boolean;
     allowDirectMessages: boolean;
   };
-  fcmTokens?: string[];
 }
 
 export interface Reaction {

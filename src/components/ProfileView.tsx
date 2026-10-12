@@ -4,7 +4,7 @@ import { Info, Clock, ShieldCheck, Mail, Pencil, Camera, X, Globe, Github, Twitt
 import { cn, formatLastSeen } from '../lib/utils';
 import { motion, AnimatePresence } from 'motion/react';
 import { useAuth } from '../context/AuthContext';
-import { doc, updateDoc, onSnapshot, runTransaction, getDoc, setDoc, deleteDoc } from 'firebase/firestore';
+import { deleteField, doc, updateDoc, onSnapshot, runTransaction, getDoc, setDoc, deleteDoc } from 'firebase/firestore';
 import { ref, uploadBytesResumable, getDownloadURL } from 'firebase/storage';
 import { db, storage } from '../lib/firebase';
 import { handleFirestoreError, OperationType } from '../lib/errorHandler';
@@ -117,7 +117,7 @@ export const ProfileView: React.FC<ProfileViewProps> = ({ userId, onClose, isCur
         transaction.update(userRef, {
           ...editData,
           displayName: editData.displayName || profileUser.displayName,
-          username: newUsername || null
+          username: newUsername || deleteField()
         });
       });
 

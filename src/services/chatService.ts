@@ -2,19 +2,21 @@ import {
   collection, 
   query, 
   where, 
-  orderBy, 
   addDoc, 
+  arrayRemove,
+  arrayUnion,
   serverTimestamp, 
   doc, 
   setDoc, 
   updateDoc,
   getDocs,
   getDocFromServer,
-  limit
+  limit,
+  writeBatch
 } from 'firebase/firestore';
-import { ref, uploadBytesResumable, getDownloadURL } from 'firebase/storage';
+import { deleteObject, ref, uploadBytesResumable } from 'firebase/storage';
 import { db, storage } from '../lib/firebase';
-import { Chat, Message, User } from '../types';
+import { Message } from '../types';
 
 export const chatService = {
   // ... existing methods ...
@@ -71,12 +73,18 @@ export const chatService = {
     mediaUrl?: string,
     replyTo?: string
   ) {
+    const trimmedText = text.trim();
+    if (!trimmedText || trimmedText.length > 10000) {
+      throw new Error('Messages must contain between 1 and 10,000 characters.');
+    }
+
     const messagesRef = collection(db, 'chats', chatId, 'messages');
-    const newMessage = {
-      messageId: '',
+    const messageRef = doc(messagesRef);
+    const newMessage: Message = {
+      messageId: messageRef.id,
       chatId,
       senderId,
-      text,
+      text: trimmedText,
       type,
       timestamp: serverTimestamp(),
       status: 'sent',
@@ -84,14 +92,11 @@ export const chatService = {
       ...(replyTo && { replyTo })
     };
 
-    const docRef = await addDoc(messagesRef, newMessage);
-    await updateDoc(docRef, { messageId: docRef.id });
-
-    // Update chat head
+    const batch = writeBatch(db);
+    batch.set(messageRef, newMessage);
     const chatRef = doc(db, 'chats', chatId);
-    const lastMessageText = type === 'text' ? text : `[${type.charAt(0).toUpperCase() + type.slice(1)}]`;
-    
-    await updateDoc(chatRef, {
+    const lastMessageText = type === 'text' ? trimmedText : `[${type.charAt(0).toUpperCase() + type.slice(1)}]`;
+    batch.update(chatRef, {
       lastMessage: {
         text: lastMessageText,
         senderId,
@@ -99,14 +104,19 @@ export const chatService = {
         status: 'sent'
       }
     });
+    await batch.commit();
 
-    return docRef.id;
+    return messageRef.id;
   },
 
   async editMessage(chatId: string, messageId: string, newText: string) {
+    const trimmedText = newText.trim();
+    if (!trimmedText || trimmedText.length > 10000) {
+      throw new Error('Edited messages must contain between 1 and 10,000 characters.');
+    }
     const messageRef = doc(db, 'chats', chatId, 'messages', messageId);
     await updateDoc(messageRef, {
-      text: newText,
+      text: trimmedText,
       isEdited: true,
       updatedAt: serverTimestamp()
     });
@@ -117,7 +127,7 @@ export const chatService = {
     await updateDoc(messageRef, {
       text: 'This message was deleted',
       isDeleted: true,
-      type: 'system'
+      type: 'text'
     });
   },
 
@@ -128,10 +138,35 @@ export const chatService = {
     onProgress?: (progress: number) => void,
     audioDuration?: number
   ) {
+    if (file.size > 50 * 1024 * 1024) {
+      throw new Error('Attachments must be 50 MB or smaller.');
+    }
     const isAudio = file instanceof Blob && file.type.startsWith('audio/');
     const type = isAudio ? 'audio' : file.type.startsWith('image/') ? 'image' : file.type.startsWith('video/') ? 'video' : 'file';
-    const fileName = file instanceof File ? file.name : `audio_${Date.now()}.webm`;
-    const storageRef = ref(storage, `chats/${chatId}/${Date.now()}_${fileName}`);
+    const contentType = file.type.toLowerCase();
+    const allowedTypes = new Set([
+      'image/jpeg',
+      'image/png',
+      'image/gif',
+      'image/webp',
+      'video/mp4',
+      'video/webm',
+      'video/quicktime',
+      'audio/webm',
+      'audio/ogg',
+      'audio/mpeg',
+      'audio/wav',
+      'audio/mp4',
+      'application/pdf',
+      'application/msword',
+      'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+    ]);
+    if (!allowedTypes.has(contentType)) {
+      throw new Error('This attachment type is not supported.');
+    }
+    const fileName = file instanceof File ? file.name.slice(0, 255) : `audio_${Date.now()}.webm`;
+    const storagePath = `chats/${chatId}/${senderId}/${crypto.randomUUID()}`;
+    const storageRef = ref(storage, storagePath);
     
     const uploadTask = uploadBytesResumable(storageRef, file);
 
@@ -144,15 +179,15 @@ export const chatService = {
         reject, 
         async () => {
           try {
-            const downloadURL = await getDownloadURL(uploadTask.snapshot.ref);
             const messagesRef = collection(db, 'chats', chatId, 'messages');
-            const newMessage: any = {
-              messageId: '',
+            const messageRef = doc(messagesRef);
+            const newMessage: Message = {
+              messageId: messageRef.id,
               chatId,
               senderId,
               text: '',
               type,
-              mediaUrl: downloadURL,
+              mediaUrl: storagePath,
               timestamp: serverTimestamp(),
               status: 'sent',
               metadata: {
@@ -165,10 +200,24 @@ export const chatService = {
               newMessage.audioDuration = audioDuration;
             }
 
-            const docRef = await addDoc(messagesRef, newMessage);
-            await updateDoc(docRef, { messageId: docRef.id });
+            const batch = writeBatch(db);
+            batch.set(messageRef, newMessage);
+            batch.update(doc(db, 'chats', chatId), {
+              lastMessage: {
+                text: `[${type.charAt(0).toUpperCase() + type.slice(1)}]`,
+                senderId,
+                timestamp: serverTimestamp(),
+                status: 'sent'
+              }
+            });
+            await batch.commit();
             resolve();
           } catch (error) {
+            try {
+              await deleteObject(uploadTask.snapshot.ref);
+            } catch (cleanupError) {
+              console.error('Failed to remove an unreferenced chat upload:', cleanupError);
+            }
             reject(error);
           }
         }
@@ -228,23 +277,12 @@ export const chatService = {
   async togglePinMessage(chatId: string, messageId: string, isPinned: boolean) {
     const messageRef = doc(db, 'chats', chatId, 'messages', messageId);
     const chatRef = doc(db, 'chats', chatId);
-    
-    await updateDoc(messageRef, { isPinned });
-    
-    const chatDoc = await getDocFromServer(chatRef);
-    const pinnedMessages: string[] = chatDoc.data()?.pinnedMessages || [];
-    
-    if (isPinned) {
-      if (!pinnedMessages.includes(messageId)) {
-        await updateDoc(chatRef, {
-          pinnedMessages: [...pinnedMessages, messageId]
-        });
-      }
-    } else {
-      await updateDoc(chatRef, {
-        pinnedMessages: pinnedMessages.filter(id => id !== messageId)
-      });
-    }
+    const batch = writeBatch(db);
+    batch.update(messageRef, { isPinned });
+    batch.update(chatRef, {
+      pinnedMessages: isPinned ? arrayUnion(messageId) : arrayRemove(messageId)
+    });
+    await batch.commit();
   },
 
   async createTaskFromMessage(userId: string, messageText: string): Promise<void> {

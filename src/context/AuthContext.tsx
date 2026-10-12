@@ -1,10 +1,15 @@
 import React, { createContext, useContext, useEffect, useState } from 'react';
 import { onAuthStateChanged, User as FirebaseUser } from 'firebase/auth';
-import { doc, setDoc, serverTimestamp, onSnapshot, arrayUnion } from 'firebase/firestore';
-import { getToken, onMessage } from 'firebase/messaging';
-import { auth, db, messaging } from '../lib/firebase';
+import {
+  deleteField,
+  doc,
+  getDoc,
+  onSnapshot,
+  serverTimestamp,
+  setDoc,
+} from 'firebase/firestore';
+import { auth, db } from '../lib/firebase';
 import { User } from '../types';
-import { handleFirestoreError, OperationType } from '../lib/errorHandler';
 
 interface AuthContextType {
   user: User | null;
@@ -20,105 +25,72 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, async (fbUser) => {
-      if (fbUser) {
-        const userDocRef = doc(db, 'users', fbUser.uid);
-        
-        // Setup presence and update profile
-        const userData: Partial<User> = {
-          uid: fbUser.uid,
-          displayName: fbUser.displayName || 'Anonymous',
-          photoURL: fbUser.photoURL || `https://ui-avatars.com/api/?name=${fbUser.displayName}`,
-          email: fbUser.email || '',
-          lastSeen: serverTimestamp(),
-          isOnline: true,
-        };
+    let transitionId = 0;
+    let unsubscribeProfile: (() => void) | undefined;
 
-        await setDoc(userDocRef, userData, { merge: true });
+    const unsubscribeAuth = onAuthStateChanged(auth, (firebaseUser) => {
+      const currentTransition = ++transitionId;
+      unsubscribeProfile?.();
+      unsubscribeProfile = undefined;
 
-        // Subscribe to actual user doc for real-time updates
-        const unsubUser = onSnapshot(userDocRef, (doc) => {
-          if (doc.exists()) {
-            setUser(doc.data() as User);
-          }
-          setLoading(false);
-        }, (error) => {
-          handleFirestoreError(error, OperationType.GET, `users/${fbUser.uid}`);
-        });
-
-        // Request FCM Token
-        try {
-          const vapidKey = import.meta.env.VITE_FCM_VAPID_KEY?.trim();
-          // Basics validation: VAPID keys are usually long 64+ char base64 strings
-          // If it sounds like a placeholder or is missing, skip silently to avoid console spam
-          if (vapidKey && vapidKey.length > 30 && !vapidKey.includes('YOUR_')) {
-            const permission = await Notification.requestPermission();
-            if (permission === 'granted') {
-              try {
-                const token = await getToken(messaging, { vapidKey });
-                if (token) {
-                  await setDoc(userDocRef, { fcmTokens: arrayUnion(token) }, { merge: true });
-                }
-              } catch (getTokenError: any) {
-                // Catch the common 'atob' error caused by malformed VAPID keys
-                if (getTokenError.message?.includes('atob') || getTokenError.code === 'messaging/invalid-vapid-key') {
-                  console.info('Push notifications disabled: VITE_FCM_VAPID_KEY is not a valid Base64 string.');
-                } else {
-                  console.warn('FCM Token generation failed:', getTokenError.message);
-                }
-              }
-            }
-          }
-        } catch (err) {
-          // General suppression for environment-related FCM failures in preview
-          console.debug('FCM setup skipped or failed:', err);
-        }
-
-        // Handle foreground notifications
-        const unsubMessage = onMessage(messaging, (payload) => {
-          console.log('Message received in foreground: ', payload);
-          // show a custom UI toast if needed
-        });
-
-        return () => {
-          unsubUser();
-          unsubMessage();
-        };
-      } else {
+      if (!firebaseUser) {
         setUser(null);
         setLoading(false);
+        return;
       }
+
+      setLoading(true);
+      setUser(null);
+      void initializeProfile(
+        firebaseUser,
+        () => currentTransition === transitionId,
+        setUser,
+        setLoading,
+      ).then((profileUnsubscribe) => {
+        if (currentTransition !== transitionId) {
+          profileUnsubscribe?.();
+          return;
+        }
+        unsubscribeProfile = profileUnsubscribe;
+      }).catch((error: unknown) => {
+        if (currentTransition !== transitionId) return;
+        console.error('Failed to initialize the signed-in user profile.', error);
+        setUser(null);
+        setLoading(false);
+      });
     });
 
-    return () => unsubscribe();
+    return () => {
+      transitionId += 1;
+      unsubscribeProfile?.();
+      unsubscribeAuth();
+    };
   }, []);
 
-  // Presence logic: update offline on window close or unmount
   useEffect(() => {
     if (!user?.uid) return;
 
-    const updatePresence = async (status: boolean) => {
-      const userDocRef = doc(db, 'users', user.uid);
-      await setDoc(userDocRef, { 
-        isOnline: status,
-        lastSeen: serverTimestamp()
-      }, { merge: true });
+    const userDocRef = doc(db, 'users', user.uid);
+    const updatePresence = (isOnline: boolean) => {
+      void setDoc(userDocRef, {
+        isOnline,
+        lastSeen: serverTimestamp(),
+      }, { merge: true }).catch((error: unknown) => {
+        console.error('Failed to update user presence.', error);
+      });
     };
 
     const handleVisibilityChange = () => {
-      if (document.visibilityState === 'hidden') {
-        updatePresence(false);
-      } else {
-        updatePresence(true);
-      }
+      updatePresence(document.visibilityState !== 'hidden');
     };
+    const handleBeforeUnload = () => updatePresence(false);
 
-    window.addEventListener('visibilitychange', handleVisibilityChange);
-    window.addEventListener('beforeunload', () => updatePresence(false));
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    window.addEventListener('beforeunload', handleBeforeUnload);
 
     return () => {
-      window.removeEventListener('visibilitychange', handleVisibilityChange);
-      window.removeEventListener('beforeunload', () => updatePresence(false));
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+      window.removeEventListener('beforeunload', handleBeforeUnload);
       updatePresence(false);
     };
   }, [user?.uid]);
@@ -129,3 +101,48 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     </AuthContext.Provider>
   );
 };
+
+async function initializeProfile(
+  firebaseUser: FirebaseUser,
+  isCurrentTransition: () => boolean,
+  updateUser: React.Dispatch<React.SetStateAction<User | null>>,
+  updateLoading: React.Dispatch<React.SetStateAction<boolean>>,
+): Promise<() => void> {
+  const userDocRef = doc(db, 'users', firebaseUser.uid);
+  const previousProfile = await getDoc(userDocRef);
+  const previousData = previousProfile.data();
+  const legacyTokens = previousData?.fcmTokens;
+
+  if (Array.isArray(legacyTokens) && legacyTokens.every((token) => typeof token === 'string')) {
+    await setDoc(doc(db, 'users', firebaseUser.uid, 'private_data', 'notifications'), {
+      fcmTokens: legacyTokens,
+    }, { merge: true });
+  }
+
+  await setDoc(userDocRef, {
+    uid: firebaseUser.uid,
+    displayName: firebaseUser.displayName || 'Anonymous',
+    photoURL: firebaseUser.photoURL ||
+      `https://ui-avatars.com/api/?name=${encodeURIComponent(firebaseUser.displayName || 'Anonymous')}`,
+    lastSeen: serverTimestamp(),
+    isOnline: true,
+    email: deleteField(),
+    fcmTokens: deleteField(),
+  }, { merge: true });
+
+  await setDoc(doc(db, 'users', firebaseUser.uid, 'private_data', 'account'), {
+    email: firebaseUser.email || '',
+  }, { merge: true });
+
+  return onSnapshot(userDocRef, (snapshot) => {
+    if (!isCurrentTransition()) return;
+    if (snapshot.exists()) {
+      updateUser({ ...snapshot.data() as User, uid: firebaseUser.uid });
+    }
+    updateLoading(false);
+  }, (error) => {
+    if (!isCurrentTransition()) return;
+    console.error(`Failed to subscribe to users/${firebaseUser.uid}.`, error);
+    updateLoading(false);
+  });
+}

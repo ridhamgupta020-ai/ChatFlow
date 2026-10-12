@@ -18,7 +18,7 @@ export const EmptyState: React.FC = () => {
           <svg viewBox="0 0 20 20" width="14" height="14" fill="currentColor">
             <path d="M15.8 8H14V5.6C14 2.5 11.5 0 8.4 0 5.3 0 2.8 2.5 2.8 5.6V8H1V20h14.8V8zM4.6 5.6C4.6 3.5 6.3 1.8 8.4 1.8s3.8 1.7 3.8 3.8V8H4.6V5.6z"></path>
           </svg>
-          <span>End-to-end encrypted</span>
+          <span>Access protected by your account and chat membership</span>
         </span>
       </div>
     </div>

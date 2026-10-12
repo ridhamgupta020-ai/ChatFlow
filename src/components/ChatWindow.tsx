@@ -13,6 +13,8 @@ import { ProfileView } from './ProfileView';
 import { motion, AnimatePresence } from 'motion/react';
 
 import { useInView } from 'react-intersection-observer';
+import { getBlob, ref } from 'firebase/storage';
+import { storage } from '../lib/firebase';
 
 import { ChatInput } from './ChatInput';
 import { Play, Pause, Volume2, Pencil, Trash2, Phone, Video } from 'lucide-react';
@@ -34,8 +36,50 @@ interface MessageItemProps {
 
 const EMOJIS = ['❤️', '😂', '😮', '😢', '🔥', '👍'];
 
+const useMessageMediaUrl = (storedUrl?: string): { url: string | null; error: boolean } => {
+  const [url, setUrl] = useState<string | null>(null);
+  const [error, setError] = useState(false);
+
+  useEffect(() => {
+    if (!storedUrl) {
+      setUrl(null);
+      setError(false);
+      return;
+    }
+
+    if (/^https?:\/\//i.test(storedUrl)) {
+      setUrl(storedUrl);
+      setError(false);
+      return;
+    }
+
+    let objectUrl: string | undefined;
+    let cancelled = false;
+    setUrl(null);
+    setError(false);
+    getBlob(ref(storage, storedUrl)).then((blob) => {
+      if (cancelled) return;
+      objectUrl = URL.createObjectURL(blob);
+      setUrl(objectUrl);
+    }).catch((error: unknown) => {
+      if (!cancelled) {
+        console.error('Unable to load this protected chat attachment.', error);
+        setError(true);
+      }
+    });
+
+    return () => {
+      cancelled = true;
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
+    };
+  }, [storedUrl]);
+
+  return { url, error };
+};
+
 const MessageItem: React.FC<MessageItemProps> = ({ msg, chat, user, isLast, onReply, onTask, replyToMsg }) => {
   const [showReactions, setShowReactions] = useState(false);
+  const { url: mediaUrl, error: mediaError } = useMessageMediaUrl(msg.mediaUrl);
   const { ref, inView } = useInView({
     triggerOnce: true,
     threshold: 0.5,
@@ -57,19 +101,26 @@ const MessageItem: React.FC<MessageItemProps> = ({ msg, chat, user, isLast, onRe
   const renderMedia = () => {
     if (msg.isDeleted) return null;
     if (!msg.mediaUrl && msg.type !== 'text') return null;
+    if (msg.mediaUrl && !mediaUrl) {
+      return (
+        <div className="mb-2 rounded-xl bg-black/5 px-4 py-3 text-xs text-[#667781]" role={mediaError ? 'alert' : 'status'}>
+          {mediaError ? 'This attachment could not be loaded.' : 'Loading protected attachment…'}
+        </div>
+      );
+    }
 
     if (msg.type === 'audio') {
-      return <AudioMessage url={msg.mediaUrl!} duration={msg.audioDuration} isMe={isMe} />;
+      return <AudioMessage url={mediaUrl!} duration={msg.audioDuration} isMe={isMe} />;
     }
 
     if (msg.type === 'image') {
       return (
         <div className="mb-2 overflow-hidden rounded-xl bg-black/5 ring-1 ring-black/5">
           <img 
-            src={msg.mediaUrl} 
+            src={mediaUrl!}
             alt="Shared image" 
             className="max-h-[350px] w-full object-cover cursor-pointer hover:opacity-95 transition-opacity" 
-            onClick={() => window.open(msg.mediaUrl, '_blank')}
+            onClick={() => window.open(mediaUrl!, '_blank', 'noopener,noreferrer')}
           />
         </div>
       );
@@ -79,7 +130,7 @@ const MessageItem: React.FC<MessageItemProps> = ({ msg, chat, user, isLast, onRe
       return (
         <div className="mb-2 overflow-hidden rounded-xl bg-black group relative">
           <video 
-            src={msg.mediaUrl} 
+            src={mediaUrl!}
             controls 
             playsInline
             className="max-h-[350px] w-full"
@@ -91,7 +142,7 @@ const MessageItem: React.FC<MessageItemProps> = ({ msg, chat, user, isLast, onRe
     if (msg.type === 'file') {
       return (
         <a 
-          href={msg.mediaUrl} 
+          href={mediaUrl!}
           target="_blank" 
           rel="noopener noreferrer"
           className="flex items-center space-x-3 rounded-xl bg-black/5 p-4 hover:bg-black/10 transition-colors mb-2 border border-black/5"

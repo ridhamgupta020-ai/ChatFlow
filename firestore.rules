@@ -2,180 +2,338 @@ rules_version = '2';
 
 service cloud.firestore {
   match /databases/{database}/documents {
-    // 0. Global Safety Net
     match /{document=**} {
       allow read, write: if false;
     }
 
-    // --- Helpers ---
-    function isSignedIn() { 
-      return request.auth != null && 
-             (request.auth.token.email_verified == true || request.auth.token.firebase.sign_in_provider == 'anonymous'); 
-    }
-    function isOwner(uid) { return isSignedIn() && request.auth.uid == uid; }
-    function isValidId(id) { return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$'); }
-    function incoming() { return request.resource.data; }
-    function existing() { return resource.data; }
-
-    // Helper to check if a user is a participant of a chat
-    function isParticipantOfChat(chatId) {
-      return isSignedIn() && (request.auth.uid in get(/databases/$(database)/documents/chats/$(chatId)).data.participants);
+    function isSignedIn() {
+      return request.auth != null &&
+        (request.auth.token.email_verified == true ||
+         request.auth.token.firebase.sign_in_provider == 'anonymous');
     }
 
-    // --- User Rules ---
+    function isOwner(uid) {
+      return isSignedIn() && request.auth.uid == uid;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() <= 128 &&
+        id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function isChatParticipant(chatId) {
+      return isSignedIn() &&
+        exists(/databases/$(database)/documents/chats/$(chatId)) &&
+        request.auth.uid in
+          get(/databases/$(database)/documents/chats/$(chatId)).data.participants;
+    }
+
     match /users/{userId} {
       function isValidUser(data) {
-        return data.uid is string && data.uid.size() <= 128 &&
-               data.displayName is string && data.displayName.size() <= 100 &&
-               data.email is string && data.email.size() <= 100 &&
-               data.isOnline is bool &&
-               (data.get('username', '') is string && data.get('username', '').size() <= 50) &&
-               (data.get('bio', '') is string && data.get('bio', '').size() <= 1000) &&
-               (data.get('statusMessage', '') is string && data.get('statusMessage', '').size() <= 500) &&
-               (data.get('statusEmoji', '') is string && data.get('statusEmoji', '').size() <= 10) &&
-               (data.get('availability', 'online') in ['online', 'busy', 'away', 'offline']) &&
-               (data.get('fcmTokens', []) is list);
+        return data.keys().hasOnly([
+            'uid', 'displayName', 'photoURL', 'lastSeen', 'isOnline',
+            'username', 'bio', 'bannerURL', 'statusMessage', 'statusEmoji',
+            'availability', 'socialLinks', 'interests', 'privacySettings'
+          ]) &&
+          data.uid == userId &&
+          data.displayName is string && data.displayName.size() <= 100 &&
+          data.isOnline is bool &&
+          data.lastSeen is timestamp &&
+          data.get('photoURL', '') is string &&
+          data.get('photoURL', '').size() <= 2048 &&
+          data.get('username', '') is string &&
+          data.get('username', '').size() <= 50 &&
+          (data.get('username', '') == '' ||
+            data.get('username', '').matches('^[a-z0-9_]{3,30}$')) &&
+          data.get('bio', '') is string && data.get('bio', '').size() <= 1000 &&
+          data.get('bannerURL', '') is string &&
+          data.get('bannerURL', '').size() <= 2048 &&
+          data.get('statusMessage', '') is string &&
+          data.get('statusMessage', '').size() <= 500 &&
+          data.get('statusEmoji', '') is string &&
+          data.get('statusEmoji', '').size() <= 10 &&
+          data.get('availability', 'online') in ['online', 'busy', 'away', 'offline'] &&
+          data.get('interests', []) is list &&
+          data.get('socialLinks', {}) is map &&
+          data.get('privacySettings', {}) is map;
       }
 
-      function hasRequiredUserFields(data) {
-        return data.keys().hasAll(['uid', 'displayName', 'email', 'isOnline', 'lastSeen']);
+      allow get, list: if isSignedIn() && isValidId(userId);
+      allow create: if isOwner(userId) &&
+        request.resource.data.keys().hasAll([
+          'uid', 'displayName', 'isOnline', 'lastSeen'
+        ]) &&
+        isValidUser(request.resource.data);
+      allow update: if isOwner(userId) &&
+        isValidUser(request.resource.data) &&
+        request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          'displayName', 'photoURL', 'bannerURL', 'isOnline', 'lastSeen',
+          'statusMessage', 'username', 'bio', 'statusEmoji', 'availability',
+          'socialLinks', 'interests', 'privacySettings', 'email', 'fcmTokens'
+        ]);
+      allow delete: if isOwner(userId);
+
+      match /private_data/{documentId} {
+        allow read, write: if isOwner(userId) &&
+          documentId in ['account', 'notifications'];
       }
 
-      allow get: if isSignedIn() && isValidId(userId);
-      allow list: if isSignedIn(); // Allow listing users to find contacts
-
-      allow create: if isOwner(userId) && hasRequiredUserFields(incoming()) && isValidUser(incoming());
-      allow update: if isOwner(userId) && isValidUser(incoming()) && 
-                    incoming().diff(existing()).affectedKeys().hasAny(['displayName', 'photoURL', 'bannerURL', 'isOnline', 'lastSeen', 'statusMessage', 'fcmTokens', 'username', 'bio', 'statusEmoji', 'availability', 'socialLinks', 'interests', 'privacySettings']);
+      match /tasks/{taskId} {
+        allow read: if isOwner(userId);
+        allow create: if isOwner(userId) &&
+          request.resource.data.keys().hasOnly(['title', 'status', 'createdAt']) &&
+          request.resource.data.title is string &&
+          request.resource.data.title.size() > 0 &&
+          request.resource.data.title.size() <= 500 &&
+          request.resource.data.status == 'pending' &&
+          request.resource.data.createdAt == request.time;
+        allow update, delete: if isOwner(userId);
+      }
     }
 
-    // --- Username Rules ---
     match /usernames/{username} {
       allow get: if isSignedIn();
-      allow create: if isSignedIn() && incoming().uid == request.auth.uid && username.size() <= 50;
-      allow delete: if isSignedIn() && existing().uid == request.auth.uid;
+      allow list: if false;
+      allow create: if isSignedIn() &&
+        request.resource.data.keys().hasOnly(['uid']) &&
+        request.resource.data.uid == request.auth.uid &&
+        username.matches('^[a-z0-9_]{3,30}$');
+      allow delete: if isSignedIn() && resource.data.uid == request.auth.uid;
+      allow update: if false;
     }
 
-    // --- Chat Rules ---
     match /chats/{chatId} {
       function isParticipant() {
-        return isSignedIn() && (request.auth.uid in resource.data.participants);
-      }
-      
-      function isValidChat(data) {
-        return data.participants is list &&
-               data.participants.size() >= 2 && data.participants.size() <= 100 &&
-               data.type in ['one-to-one', 'group'];
+        return isSignedIn() &&
+          request.auth.uid in resource.data.participants;
       }
 
-      function hasRequiredChatFields(data) {
-        return data.keys().hasAll(['chatId', 'participants', 'type', 'createdAt']);
+      function isGroupAdmin() {
+        return isParticipant() &&
+          resource.data.type == 'group' &&
+          request.auth.uid in resource.data.get('admins', []);
       }
 
-      allow get: if isSignedIn() && isParticipant();
-      allow list: if isSignedIn() && (request.auth.uid in resource.data.participants);
-      
-      allow create: if isSignedIn() && hasRequiredChatFields(incoming()) && isValidChat(incoming()) && (request.auth.uid in incoming().participants);
-      allow update: if isParticipant() && 
-                    incoming().diff(existing()).affectedKeys().hasAny(['lastMessage', 'photoURL', 'name', 'unreadCount', 'chatId']);
+      function validChat(data) {
+        return data.keys().hasOnly([
+            'chatId', 'participants', 'type', 'name', 'photoURL',
+            'admins', 'pinnedMessages', 'lastMessage', 'unreadCount', 'createdAt'
+          ]) &&
+          data.chatId is string &&
+          data.participants is list &&
+          data.participants.size() >= 2 &&
+          data.participants.size() <= 100 &&
+          request.auth.uid in data.participants &&
+          data.type in ['one-to-one', 'group'] &&
+          data.createdAt is timestamp &&
+          (data.type != 'one-to-one' || data.participants.size() == 2) &&
+          (data.type != 'group' ||
+            (data.get('name', '') is string &&
+             data.get('name', '').size() > 0 &&
+             data.get('name', '').size() <= 100 &&
+             data.get('photoURL', '') is string &&
+             data.get('photoURL', '').size() <= 2048 &&
+             data.get('admins', []) is list &&
+             data.get('admins', []).hasAny([request.auth.uid])));
+      }
 
-      // --- Message Rules ---
+      function validLastMessage(data) {
+        return data is map &&
+          data.keys().hasAll(['senderId', 'text', 'timestamp', 'status']) &&
+          data.get('senderId', '') == request.auth.uid &&
+          data.get('text', '') is string &&
+          data.get('text', '').size() <= 10000 &&
+          data.get('timestamp', request.time) == request.time &&
+          data.get('status', 'sent') == 'sent';
+      }
+
+      allow get, list: if isParticipant();
+      allow create: if isSignedIn() &&
+        request.resource.data.keys().hasAll([
+          'chatId', 'participants', 'type', 'createdAt'
+        ]) &&
+        request.resource.data.chatId == '' &&
+        request.resource.data.createdAt == request.time &&
+        validChat(request.resource.data) &&
+        (request.resource.data.type != 'group' ||
+          request.resource.data.get('admins', []) == [request.auth.uid]);
+      allow update: if isParticipant() &&
+        request.resource.data.participants == resource.data.participants &&
+        request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          'chatId', 'lastMessage', 'name', 'photoURL',
+          'pinnedMessages', 'unreadCount'
+        ]) &&
+        (
+          (request.resource.data.diff(resource.data).affectedKeys().hasOnly(['chatId']) &&
+            resource.data.chatId == '' &&
+            request.resource.data.chatId == chatId) ||
+          (request.resource.data.diff(resource.data).affectedKeys().hasOnly(['lastMessage']) &&
+            validLastMessage(request.resource.data.lastMessage)) ||
+          (isGroupAdmin() &&
+            request.resource.data.diff(resource.data).affectedKeys().hasOnly(['name', 'photoURL']) &&
+            request.resource.data.get('name', '').size() <= 100 &&
+            request.resource.data.get('photoURL', '').size() <= 2048) ||
+          (request.resource.data.diff(resource.data).affectedKeys().hasOnly(['pinnedMessages']) &&
+            request.resource.data.get('pinnedMessages', []) is list &&
+            request.resource.data.get('pinnedMessages', []).size() <= 100) ||
+          (request.resource.data.diff(resource.data).affectedKeys().hasOnly(['unreadCount']) &&
+            request.resource.data.unreadCount is map &&
+            request.resource.data.unreadCount.diff(resource.data.get('unreadCount', {}))
+              .affectedKeys().hasOnly([request.auth.uid]) &&
+            request.resource.data.unreadCount.get(request.auth.uid, 0) == 0)
+        );
+
       match /messages/{messageId} {
-        function isValidMessage(data) {
-          return data.senderId == request.auth.uid &&
-                 data.chatId == chatId &&
-                 data.type in ['text', 'image', 'video', 'file'] &&
-                 data.status in ['sent', 'delivered', 'read'] &&
-                 (data.get('mediaUrl', '') is string && data.get('mediaUrl', '').size() <= 1000);
+        function validMessage(data) {
+          return data.keys().hasOnly([
+              'messageId', 'chatId', 'senderId', 'text', 'type', 'timestamp',
+              'status', 'mediaUrl', 'replyTo', 'reactions', 'isPinned',
+              'isEdited', 'isDeleted', 'audioDuration', 'metadata', 'updatedAt'
+            ]) &&
+            data.messageId == messageId &&
+            data.chatId == chatId &&
+            data.senderId == request.auth.uid &&
+            data.text is string && data.text.size() <= 10000 &&
+            data.type in ['text', 'image', 'video', 'file', 'audio'] &&
+            data.timestamp == request.time &&
+            data.status == 'sent' &&
+            ((data.type == 'text' && data.text.size() > 0) ||
+             (data.type != 'text' && data.mediaUrl is string && data.mediaUrl.size() > 0)) &&
+            data.get('mediaUrl', '') is string &&
+            data.get('mediaUrl', '').size() <= 1024 &&
+            data.get('replyTo', '') is string;
         }
 
-        function hasRequiredMessageFields(data) {
-          return data.keys().hasAll(['messageId', 'chatId', 'senderId', 'timestamp', 'status', 'type']);
-        }
-
-        allow get, list: if isParticipantOfChat(chatId);
-        allow create: if isParticipantOfChat(chatId) && hasRequiredMessageFields(incoming()) && isValidMessage(incoming());
-        allow update: if isParticipantOfChat(chatId) && 
-                      incoming().diff(existing()).affectedKeys().hasAny(['status', 'messageId']);
+        allow get, list: if isChatParticipant(chatId);
+        allow create: if isChatParticipant(chatId) &&
+          request.resource.data.keys().hasAll([
+            'messageId', 'chatId', 'senderId', 'text', 'timestamp', 'status', 'type'
+          ]) &&
+          validMessage(request.resource.data);
+        allow update: if isChatParticipant(chatId) &&
+          request.resource.data.chatId == resource.data.chatId &&
+          request.resource.data.senderId == resource.data.senderId &&
+          (
+            (request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status']) &&
+              resource.data.senderId != request.auth.uid &&
+              request.resource.data.status == 'read') ||
+            (request.resource.data.diff(resource.data).affectedKeys().hasOnly(['messageId']) &&
+              resource.data.messageId == '' &&
+              request.resource.data.messageId == messageId) ||
+            (resource.data.senderId == request.auth.uid &&
+              request.resource.data.diff(resource.data).affectedKeys()
+                .hasOnly(['text', 'isEdited', 'updatedAt']) &&
+              request.resource.data.text is string &&
+              request.resource.data.text.size() <= 10000 &&
+              request.resource.data.isEdited == true &&
+              request.resource.data.updatedAt == request.time) ||
+            (resource.data.senderId == request.auth.uid &&
+              request.resource.data.diff(resource.data).affectedKeys()
+                .hasOnly(['text', 'isDeleted', 'type']) &&
+              request.resource.data.text == 'This message was deleted' &&
+              request.resource.data.isDeleted == true &&
+              request.resource.data.type == 'text') ||
+            (request.resource.data.diff(resource.data).affectedKeys().hasOnly(['isPinned']) &&
+              request.resource.data.isPinned is bool) ||
+            (request.resource.data.diff(resource.data).affectedKeys().hasOnly(['reactions']) &&
+              request.resource.data.reactions is list &&
+              request.resource.data.reactions.size() <= 100)
+          );
+        allow delete: if isChatParticipant(chatId) &&
+          resource.data.senderId == request.auth.uid;
       }
 
-      // --- Typing Rules ---
       match /typing/{userId} {
-        allow read: if isParticipantOfChat(chatId);
-        allow write: if isOwner(userId);
+        allow read: if isChatParticipant(chatId);
+        allow write: if isChatParticipant(chatId) &&
+          isOwner(userId) &&
+          request.resource.data.keys().hasOnly(['isTyping', 'updatedAt']) &&
+          request.resource.data.isTyping is bool &&
+          request.resource.data.updatedAt == request.time;
       }
 
-      // --- Whiteboard Rules ---
       match /whiteboard_strokes/{strokeId} {
-        function isValidStroke(data) {
+        function validStroke(data) {
           return data.senderId == request.auth.uid &&
-                 data.chatId == chatId &&
-                 data.points is list &&
-                 data.points.size() <= 1500 && // Slightly more for detailed 3D curves
-                 data.color is string &&
-                 data.width is number;
+            data.chatId == chatId &&
+            data.points is list &&
+            data.points.size() >= 6 &&
+            data.points.size() <= 1500 &&
+            data.color is string &&
+            data.color.matches('^#[0-9a-fA-F]{6}$') &&
+            data.width is number &&
+            data.width > 0 && data.width <= 20 &&
+            data.timestamp == request.time;
         }
 
-        function hasRequiredStrokeFields(data) {
-          return data.keys().hasAll(['strokeId', 'chatId', 'senderId', 'points', 'color', 'width', 'timestamp']);
-        }
-
-        allow read, list: if isParticipantOfChat(chatId);
-        allow create: if isParticipantOfChat(chatId) && hasRequiredStrokeFields(incoming()) && isValidStroke(incoming());
-        allow delete: if isParticipantOfChat(chatId); // Allow anyone in chat to clear or delete a stroke for collaboration
+        allow read: if isChatParticipant(chatId);
+        allow create: if isChatParticipant(chatId) &&
+          request.resource.data.keys().hasOnly([
+            'strokeId', 'chatId', 'senderId', 'points', 'color', 'width', 'timestamp'
+          ]) &&
+          request.resource.data.strokeId == '' &&
+          validStroke(request.resource.data);
+        allow delete: if isChatParticipant(chatId);
+        allow update: if false;
       }
     }
 
-    // --- Call Rules ---
     match /calls/{callId} {
       function isCallParticipant() {
-        return isSignedIn() && (request.auth.uid in resource.data.participants);
+        return isSignedIn() && request.auth.uid in resource.data.participants;
       }
 
-      function isValidCallSchema(data) {
+      function validCall(data) {
         return data.participants is list &&
-               data.participants.size() >= 2 &&
-               data.participants.size() <= 20 &&
-               data.type in ['audio', 'video'] &&
-               data.status in ['ringing', 'connected', 'ended', 'missed', 'rejected'] &&
-               data.isGroup is bool &&
-               (data.startTime == request.time || data.startTime is timestamp);
+          data.participants.size() >= 2 &&
+          data.participants.size() <= 20 &&
+          data.type in ['audio', 'video'] &&
+          data.status in ['ringing', 'connected', 'ended', 'missed', 'rejected'] &&
+          data.isGroup is bool &&
+          data.startTime == request.time;
       }
 
-      function hasRequiredCallFields(data) {
-        return data.keys().hasAll(['callId', 'hostId', 'participants', 'type', 'status', 'startTime', 'isGroup']);
-      }
+      allow get, list: if isCallParticipant();
+      allow create: if isSignedIn() &&
+        request.resource.data.keys().hasOnly([
+          'callId', 'hostId', 'participants', 'type', 'status',
+          'startTime', 'endTime', 'duration', 'isGroup', 'chatId', 'summary'
+        ]) &&
+        request.resource.data.callId == callId &&
+        request.resource.data.hostId == request.auth.uid &&
+        request.auth.uid in request.resource.data.participants &&
+        request.resource.data.chatId is string &&
+        isChatParticipant(request.resource.data.chatId) &&
+        request.resource.data.participants.hasOnly(
+          get(/databases/$(database)/documents/chats/$(request.resource.data.chatId)).data.participants
+        ) &&
+        validCall(request.resource.data);
+      allow update: if isCallParticipant() &&
+        request.resource.data.participants == resource.data.participants &&
+        request.resource.data.hostId == resource.data.hostId &&
+        request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          'status', 'endTime', 'duration', 'summary'
+        ]) &&
+        request.resource.data.status in ['ringing', 'connected', 'ended', 'missed', 'rejected'];
+      allow delete: if false;
 
-      allow get: if isSignedIn() && isValidId(callId) && (request.auth.uid in resource.data.participants);
-      allow list: if isSignedIn() && (request.auth.uid in resource.data.participants);
-      
-      allow create: if isSignedIn() && 
-                    hasRequiredCallFields(incoming()) && 
-                    isValidCallSchema(incoming()) && 
-                    incoming().callId == callId &&
-                    incoming().hostId == request.auth.uid &&
-                    (request.auth.uid in incoming().participants);
-
-      allow update: if isCallParticipant() && 
-                    isValidCallSchema(incoming()) && (
-                      // Transition Action: Change status
-                      incoming().diff(existing()).affectedKeys().hasOnly(['status', 'endTime', 'duration', 'summary', 'callId'])
-                    );
-
-      // --- Signaling Rules ---
       match /signaling/{signalId} {
-        function isValidSignal(data) {
-          return data.from == request.auth.uid &&
-                 data.to is string &&
-                 data.type in ['offer', 'answer', 'candidate'] &&
-                 data.payload is string &&
-                 data.payload.size() <= 65536 &&
-                 (data.timestamp == request.time || data.timestamp is timestamp);
-        }
-
-        allow read, list: if isSignedIn() && (resource.data.to == request.auth.uid || resource.data.from == request.auth.uid);
-        allow create: if isSignedIn() && isValidSignal(incoming()) && 
-                      (request.auth.uid in get(/databases/$(database)/documents/calls/$(callId)).data.participants);
+        allow read: if isSignedIn() &&
+          request.auth.uid in
+            get(/databases/$(database)/documents/calls/$(callId)).data.participants &&
+          (resource.data.to == request.auth.uid || resource.data.from == request.auth.uid);
+        allow create: if isSignedIn() &&
+          request.resource.data.keys().hasOnly(['from', 'to', 'type', 'payload', 'timestamp']) &&
+          request.resource.data.from == request.auth.uid &&
+          request.resource.data.type in ['offer', 'answer', 'candidate'] &&
+          request.resource.data.payload is string &&
+          request.resource.data.payload.size() <= 65536 &&
+          request.resource.data.timestamp == request.time &&
+          request.auth.uid in
+            get(/databases/$(database)/documents/calls/$(callId)).data.participants &&
+          request.resource.data.to in
+            get(/databases/$(database)/documents/calls/$(callId)).data.participants;
+        allow update, delete: if false;
       }
     }
   }
