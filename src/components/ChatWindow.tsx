@@ -1,14 +1,13 @@
-import React, { useEffect, useState, useRef } from 'react';
+import React, { lazy, Suspense, useEffect, useState, useRef } from 'react';
 import { doc, onSnapshot, collection, query, orderBy, limit } from 'firebase/firestore';
 import { db } from '../lib/firebase';
 import { Chat, Message, User, TypingStatus } from '../types';
 import { useAuth } from '../context/AuthContext';
-import { MoreVertical, Search, Send, Smile, Paperclip, Check, CheckCheck, FileIcon, Download, Loader2, Box, Users, X, Reply, Zap, Sparkles, Pin, ListTodo } from 'lucide-react';
+import { MoreVertical, Search, Send, Smile, Paperclip, Check, CheckCheck, FileIcon, Download, Loader2, Box, Users, X, Reply, Zap, Sparkles, Pin, ListTodo, ArrowLeft } from 'lucide-react';
 import { cn, formatDate, formatLastSeen } from '../lib/utils';
 import { chatService } from '../services/chatService';
 import { geminiService } from '../services/geminiService';
 import { handleFirestoreError, OperationType } from '../lib/errorHandler';
-import { ARWhiteboard } from './ARWhiteboard';
 import { ProfileView } from './ProfileView';
 import { motion, AnimatePresence } from 'motion/react';
 
@@ -20,8 +19,13 @@ import { ChatInput } from './ChatInput';
 import { Play, Pause, Volume2, Pencil, Trash2, Phone, Video } from 'lucide-react';
 import { useCalling } from '../context/CallingContext';
 
+const ARWhiteboard = lazy(() => import('./ARWhiteboard').then((module) => ({
+  default: module.ARWhiteboard,
+})));
+
 interface ChatWindowProps {
   chatId: string;
+  onBack: () => void;
 }
 
 interface MessageItemProps {
@@ -424,7 +428,7 @@ const AudioMessage: React.FC<{ url: string; duration?: number; isMe: boolean }> 
   );
 };
 
-export const ChatWindow: React.FC<ChatWindowProps> = ({ chatId }) => {
+export const ChatWindow: React.FC<ChatWindowProps> = ({ chatId, onBack }) => {
   const { user } = useAuth();
   const { startCall } = useCalling();
   const [chat, setChat] = useState<Chat | null>(null);
@@ -438,7 +442,6 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({ chatId }) => {
   const [replyingTo, setReplyingTo] = useState<Message | null>(null);
   const [summary, setSummary] = useState<string | null>(null);
   const [isSummarizing, setIsSummarizing] = useState(false);
-  const [smartReplies, setSmartReplies] = useState<string[]>([]);
   const [showWhiteboard, setShowWhiteboard] = useState(false);
   const [showTasks, setShowTasks] = useState(false);
   const [showPartnerProfile, setShowPartnerProfile] = useState(false);
@@ -504,17 +507,7 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({ chatId }) => {
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'auto' });
-    
-    // Get smart replies for the last message if it's from partner
-    if (messages.length > 0) {
-      const last = messages[messages.length - 1];
-      if (last.senderId !== user?.uid && last.text) {
-        geminiService.suggestSmartReplies(last.text).then(setSmartReplies);
-      } else {
-        setSmartReplies([]);
-      }
-    }
-  }, [messages, user?.uid]);
+  }, [messages]);
 
   const handleSendMessage = async (e?: React.FormEvent) => {
     if (e) e.preventDefault();
@@ -555,6 +548,7 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({ chatId }) => {
       alert("Added to tasks!");
     } catch (err) {
       console.error(err);
+      window.alert('Could not create the task from this message.');
     }
   };
 
@@ -608,7 +602,7 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({ chatId }) => {
     <div className="flex h-full flex-1 flex-col bg-[#fdfdfd] relative overflow-hidden">
       {/* Premium Header */}
       <div 
-        className="flex h-[80px] items-center bg-white/60 backdrop-blur-3xl px-8 z-40 border-b border-[#f0f2f5] cursor-pointer hover:bg-white/80 transition-all sticky top-0"
+        className="flex h-[80px] shrink-0 items-center bg-white/60 backdrop-blur-3xl px-4 md:px-8 z-40 border-b border-[#f0f2f5] cursor-pointer hover:bg-white/80 transition-all sticky top-0"
         onClick={() => {
           if (chat?.type === 'one-to-one') {
             setShowPartnerProfile(true);
@@ -617,6 +611,17 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({ chatId }) => {
           }
         }}
       >
+        <button
+          type="button"
+          aria-label="Back to conversations"
+          onClick={(event) => {
+            event.stopPropagation();
+            onBack();
+          }}
+          className="mr-3 rounded-xl p-2 text-[#54656f] hover:bg-[#f0f2f5] md:hidden"
+        >
+          <ArrowLeft className="h-5 w-5" />
+        </button>
         <div className="relative">
           <motion.img 
             layoutId={chat?.chatId}
@@ -736,7 +741,7 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({ chatId }) => {
       </div>
 
       {/* Messages Area */}
-      <div className="flex-1 overflow-y-auto px-6 py-8 bg-[#fdfdfd] relative">
+      <div className="flex-1 overflow-y-auto px-3 py-5 md:px-6 md:py-8 bg-[#fdfdfd] relative">
         {/* Subtle Background Pattern */}
         <div className="absolute inset-0 pointer-events-none opacity-[0.02] mix-blend-multiply transition-opacity duration-1000" 
              style={{ backgroundImage: `url("data:image/svg+xml,%3Csvg width='60' height='60' viewBox='0 0 60 60' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M54.626 10.5H60v2H54.626l-3.5 3.5h-2l3.5-3.5H45.5v-2h7.126l-3.5-3.5h2l3.5 3.5zM10.5 45.5V60h-2V45.5l-3.5 3.5h-2l3.5-3.5V36.5h2v7.126l3.5-3.5h2l-3.5 3.5z' fill='%23000000' fill-opacity='1' fill-rule='evenodd'/%3E%3C/svg%3E")` }} 
@@ -847,10 +852,12 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({ chatId }) => {
 
       <AnimatePresence>
         {showWhiteboard && (
-          <ARWhiteboard 
-            chatId={chatId} 
-            onClose={() => setShowWhiteboard(false)} 
-          />
+          <Suspense fallback={<div className="fixed inset-0 z-[100] flex items-center justify-center bg-[#111b21] text-white">Loading shared whiteboard…</div>}>
+            <ARWhiteboard
+              chatId={chatId}
+              onClose={() => setShowWhiteboard(false)}
+            />
+          </Suspense>
         )}
         {showPartnerProfile && partner && (
           <ProfileView 

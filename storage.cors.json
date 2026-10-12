@@ -1,6 +1,6 @@
 [
   {
-    "origin": ["http://localhost:3000", "https://*.web.app", "https://*.firebaseapp.com"],
+    "origin": ["*"],
     "method": ["GET", "HEAD"],
     "responseHeader": ["Content-Type", "Authorization", "Range"],
     "maxAgeSeconds": 3600

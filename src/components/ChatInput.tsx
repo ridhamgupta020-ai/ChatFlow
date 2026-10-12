@@ -2,7 +2,7 @@ import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { Send, Smile, Paperclip, Mic, X, Image as ImageIcon, FileIcon, Square, Loader2, Sparkles, Wand2, History } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import EmojiPicker, { Theme } from 'emoji-picker-react';
-import { useDropzone } from 'react-dropzone';
+import { useDropzone, type FileRejection } from 'react-dropzone';
 import { cn } from '../lib/utils';
 import { geminiService } from '../services/geminiService';
 
@@ -30,11 +30,13 @@ export const ChatInput: React.FC<ChatInputProps> = ({
   const [isSending, setIsSending] = useState(false);
   const [showSmartTools, setShowSmartTools] = useState(false);
   const [isImproving, setIsImproving] = useState(false);
+  const [actionError, setActionError] = useState<string | null>(null);
   
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const timerRef = useRef<NodeJS.Timeout | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
+  const discardRecordingRef = useRef(false);
 
   // Load draft
   useEffect(() => {
@@ -72,10 +74,14 @@ export const ChatInput: React.FC<ChatInputProps> = ({
   const handleSend = async () => {
     if (!text.trim() || isSending) return;
     setIsSending(true);
+    setActionError(null);
     try {
       await onSendMessage(text);
       setText('');
       if (textareaRef.current) textareaRef.current.style.height = 'auto';
+    } catch (error) {
+      console.error('Failed to send the message.', error);
+      setActionError(error instanceof Error ? error.message : 'The message could not be sent.');
     } finally {
       setIsSending(false);
     }
@@ -94,12 +100,20 @@ export const ChatInput: React.FC<ChatInputProps> = ({
 
       mediaRecorder.onstop = async () => {
         const audioBlob = new Blob(audioChunksRef.current, { type: 'audio/webm' });
-        if (recordingTime > 1) {
-          await onSendMedia(audioBlob, recordingTime);
+        try {
+          if (!discardRecordingRef.current && recordingTime > 1) {
+            await onSendMedia(audioBlob, recordingTime);
+          }
+        } catch (error) {
+          console.error('Failed to send the voice message.', error);
+          setActionError(error instanceof Error ? error.message : 'The voice message could not be sent.');
+        } finally {
+          discardRecordingRef.current = false;
+          stream.getTracks().forEach(track => track.stop());
         }
-        stream.getTracks().forEach(track => track.stop());
       };
 
+      discardRecordingRef.current = false;
       mediaRecorder.start();
       setIsRecording(true);
       setRecordingTime(0);
@@ -108,7 +122,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
       }, 1000);
     } catch (err) {
       console.error("Recording error:", err);
-      alert("Could not access microphone.");
+      setActionError('Could not access the microphone. Check your browser permission and try again.');
     }
   };
 
@@ -120,17 +134,29 @@ export const ChatInput: React.FC<ChatInputProps> = ({
     }
   };
 
+  const cancelRecording = () => {
+    discardRecordingRef.current = true;
+    stopRecording();
+  };
+
   const formatTime = (seconds: number) => {
     const mins = Math.floor(seconds / 60);
     const secs = seconds % 60;
     return `${mins}:${secs.toString().padStart(2, '0')}`;
   };
 
-  const onDrop = useCallback((acceptedFiles: File[]) => {
-    acceptedFiles.forEach(file => onSendMedia(file));
+  const onDrop = useCallback((acceptedFiles: File[], fileRejections: FileRejection[]) => {
+    const rejectionMessage = fileRejections.slice(0, 2)
+      .map(({ file, errors }) => `${file.name}: ${errors.map(({ message }) => message).join(', ')}`)
+      .join('; ');
+    setActionError(rejectionMessage || null);
+    void Promise.all(acceptedFiles.map(file => onSendMedia(file))).catch((error: unknown) => {
+      console.error('Failed to send a dropped attachment.', error);
+      setActionError(error instanceof Error ? error.message : 'The attachment could not be sent.');
+    });
   }, [onSendMedia]);
 
-  const { getRootProps, getInputProps, isDragActive } = useDropzone({ 
+  const { getRootProps, getInputProps, isDragActive, open } = useDropzone({
     onDrop,
     noClick: true,
     accept: {
@@ -139,7 +165,9 @@ export const ChatInput: React.FC<ChatInputProps> = ({
       'application/pdf': [],
       'application/msword': [],
       'application/vnd.openxmlformats-officedocument.wordprocessingml.document': []
-    }
+    },
+    maxSize: 50 * 1024 * 1024,
+    maxFiles: 5,
   });
 
   const handlePaste = (e: React.ClipboardEvent) => {
@@ -147,17 +175,26 @@ export const ChatInput: React.FC<ChatInputProps> = ({
     for (let i = 0; i < items.length; i++) {
       if (items[i].type.indexOf('image') !== -1) {
         const file = items[i].getAsFile();
-        if (file) onSendMedia(file);
+        if (file) {
+          void onSendMedia(file).catch((error: unknown) => {
+            console.error('Failed to send the pasted image.', error);
+            setActionError(error instanceof Error ? error.message : 'The image could not be sent.');
+          });
+        }
       }
     }
   };
 
-  const improveWithAI = async (tone: 'professional' | 'friendly' | 'concise') => {
+  const improveWithAI = async (tone: 'professional' | 'friendly' | 'concise' | 'humorous') => {
     if (!text.trim()) return;
     setIsImproving(true);
+    setActionError(null);
     try {
       const improved = await geminiService.improveWriting(text, tone);
       setText(improved);
+    } catch (error) {
+      console.error('The AI writing request failed.', error);
+      setActionError(error instanceof Error ? error.message : 'The writing suggestion could not be generated.');
     } finally {
       setIsImproving(false);
     }
@@ -166,6 +203,13 @@ export const ChatInput: React.FC<ChatInputProps> = ({
   return (
     <div className="relative border-t border-[#f0f2f5] bg-white/60 backdrop-blur-3xl px-8 py-5" {...getRootProps()} onPaste={handlePaste}>
       <input {...getInputProps()} />
+
+      {actionError && (
+        <div className="mx-auto mb-3 flex max-w-5xl items-center justify-between rounded-xl bg-rose-50 px-4 py-2 text-sm text-rose-700" role="alert">
+          <span>{actionError}</span>
+          <button type="button" onClick={() => setActionError(null)} className="ml-4 font-semibold">Dismiss</button>
+        </div>
+      )}
       
       {isDragActive && (
         <div className="absolute inset-0 z-50 flex items-center justify-center bg-emerald-500/10 backdrop-blur-xl border-2 border-dashed border-emerald-500/30 rounded-t-[40px] animate-pulse">
@@ -179,7 +223,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
       {/* Reply Preview */}
       <AnimatePresence>
         {replyingTo && (
-          <motion.div 
+          <motion.div
             initial={{ opacity: 0, y: 10, scale: 0.95 }}
             animate={{ opacity: 1, y: 0, scale: 1 }}
             exit={{ opacity: 0, y: 10, scale: 0.95 }}
@@ -217,11 +261,11 @@ export const ChatInput: React.FC<ChatInputProps> = ({
             </button>
             <div className="absolute bottom-full left-0 mb-4 invisible group-hover:visible opacity-0 group-hover:opacity-100 transition-all scale-90 group-hover:scale-100 origin-bottom-left z-[100]">
               <div className="bg-white/90 backdrop-blur-2xl rounded-[28px] shadow-2xl border border-[#f0f2f5] p-3 flex flex-col space-y-1 min-w-[200px]">
-                <button className="px-5 py-4 hover:bg-emerald-50 rounded-2xl text-emerald-600 flex items-center space-x-4 transition-all group/item">
+                <button type="button" onClick={open} className="px-5 py-4 hover:bg-emerald-50 rounded-2xl text-emerald-600 flex items-center space-x-4 transition-all group/item">
                   <ImageIcon className="h-5 w-5 group-hover/item:scale-110 transition-transform" />
                   <span className="text-xs font-black uppercase tracking-wider">Visual Asset</span>
                 </button>
-                <button className="px-5 py-4 hover:bg-blue-50 rounded-2xl text-blue-600 flex items-center space-x-4 transition-all group/item">
+                <button type="button" onClick={open} className="px-5 py-4 hover:bg-blue-50 rounded-2xl text-blue-600 flex items-center space-x-4 transition-all group/item">
                   <FileIcon className="h-5 w-5 group-hover/item:scale-110 transition-transform" />
                   <span className="text-xs font-black uppercase tracking-wider">Data Payload</span>
                 </button>
@@ -247,15 +291,18 @@ export const ChatInput: React.FC<ChatInputProps> = ({
           
           <AnimatePresence>
             {text.length > 0 && !isRecording && (
-              <motion.div 
+              <motion.button
                 initial={{ opacity: 0, scale: 0.8, x: 10 }}
                 animate={{ opacity: 1, scale: 1, x: 0 }}
                 exit={{ opacity: 0, scale: 0.8, x: 10 }}
-                className="absolute right-3 bottom-3 p-2 bg-emerald-500 text-white rounded-2xl shadow-xl shadow-emerald-500/20 cursor-pointer active:scale-95 transition-all hover:bg-emerald-600"
-                onClick={handleSend}
+                type="button"
+                aria-label="Send message"
+                disabled={isSending}
+                className="absolute right-3 bottom-3 p-2 bg-emerald-500 text-white rounded-2xl shadow-xl shadow-emerald-500/20 cursor-pointer active:scale-95 transition-all hover:bg-emerald-600 disabled:cursor-wait"
+                onClick={() => void handleSend()}
               >
                 {isSending ? <Loader2 className="h-6 w-6 animate-spin" /> : <Send className="h-6 w-6" />}
-              </motion.div>
+              </motion.button>
             )}
           </AnimatePresence>
         </div>
@@ -320,7 +367,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                 <span className="text-sm font-bold text-rose-500">{formatTime(recordingTime)}</span>
                 <span className="text-xs font-medium text-gray-400 animate-pulse">Recording voice... Release to send</span>
              </div>
-             <button onClick={stopRecording} className="p-2 text-gray-400 hover:text-rose-500 hover:bg-rose-50 rounded-xl transition-all">
+             <button type="button" onClick={cancelRecording} aria-label="Cancel voice recording" className="p-2 text-gray-400 hover:text-rose-500 hover:bg-rose-50 rounded-xl transition-all">
                <X className="h-6 w-6" />
              </button>
           </motion.div>
@@ -380,7 +427,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                ].map(tool => (
                  <button 
                   key={tool.id}
-                  onClick={() => improveWithAI(tool.id as any)}
+                  onClick={() => void improveWithAI(tool.id as 'friendly' | 'professional' | 'concise' | 'humorous')}
                   disabled={isImproving || !text.trim()}
                   className={cn(
                     "p-4 rounded-2xl flex flex-col items-center justify-center space-y-2 transition-all active:scale-95",

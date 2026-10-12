@@ -3,14 +3,17 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState } from 'react';
+import React, { lazy, Suspense, useState } from 'react';
 import { AuthProvider, useAuth } from './context/AuthContext';
 import { Login } from './components/Login';
 import { Sidebar } from './components/Sidebar';
 import { ChatWindow } from './components/ChatWindow';
 import { EmptyState } from './components/EmptyState';
 import { CallingProvider } from './context/CallingContext';
-import { CallInsights } from './components/CallInsights';
+
+const CallInsights = lazy(() => import('./components/CallInsights').then((module) => ({
+  default: module.CallInsights,
+})));
 
 function ChatApp() {
   const { user, loading } = useAuth();
@@ -33,25 +36,33 @@ function ChatApp() {
   }
 
   return (
-    <div className="flex h-screen w-full overflow-hidden bg-[#F0F2F5] p-0 lg:p-4">
+    <div className="flex h-dvh w-full overflow-hidden bg-[#F0F2F5] p-0 lg:p-4">
       <div className="flex h-full w-full overflow-hidden rounded-none shadow-2xl bg-white lg:rounded-lg">
-        <Sidebar 
-          selectedChatId={selectedChatId} 
-          onSelectChat={(id) => {
-            setSelectedChatId(id);
-            setViewMode('chats');
-          }} 
-          onViewInsights={() => {
-            setViewMode('insights');
-            setSelectedChatId(null);
-          }}
-        />
+        <div className={`h-full w-full shrink-0 md:flex md:w-[380px] ${selectedChatId && viewMode === 'chats' ? 'hidden' : 'flex'}`}>
+          <Sidebar
+            selectedChatId={selectedChatId}
+            onSelectChat={(id) => {
+              setSelectedChatId(id);
+              setViewMode('chats');
+            }}
+            onViewInsights={() => {
+              setViewMode('insights');
+              setSelectedChatId(null);
+            }}
+          />
+        </div>
         {viewMode === 'insights' ? (
-          <CallInsights />
+          <Suspense fallback={<div className="flex flex-1 items-center justify-center text-sm text-gray-500">Loading call insights…</div>}>
+            <CallInsights />
+          </Suspense>
         ) : selectedChatId ? (
-          <ChatWindow chatId={selectedChatId} />
+          <div className={`h-full w-full min-w-0 ${selectedChatId && viewMode === 'chats' ? 'flex' : 'hidden md:flex'}`}>
+            <ChatWindow chatId={selectedChatId} onBack={() => setSelectedChatId(null)} />
+          </div>
         ) : (
-          <EmptyState />
+          <div className="hidden h-full min-w-0 flex-1 md:flex">
+            <EmptyState />
+          </div>
         )}
       </div>
     </div>

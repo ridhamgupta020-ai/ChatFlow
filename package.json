@@ -8,7 +8,8 @@
     "build": "vite build",
     "start": "serve -s dist",
     "preview": "vite preview",
-    "lint": "tsc --noEmit"
+    "lint": "tsc --noEmit",
+    "test:rules": "firebase emulators:exec --only firestore,storage --project demo-chatflow \"tsx --test tests/firestore.rules.test.ts\""
   },
   "dependencies": {
     "@react-three/drei": "^10.7.7",
@@ -36,6 +37,7 @@
     "zod": "^4.4.2"
   },
   "devDependencies": {
+    "@firebase/rules-unit-testing": "^5.0.2",
     "@types/node": "^22.14.0",
     "autoprefixer": "^10.4.21",
     "serve": "^14.2.6",

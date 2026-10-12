@@ -77,7 +77,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ onSelectChat, onViewInsights, 
   };
 
   return (
-    <div className="flex h-full w-[380px] flex-col border-r border-[#f0f2f5] bg-white min-w-[380px] z-40 shadow-[4px_0_24px_rgba(0,0,0,0.02)]">
+    <div className="flex h-full w-full min-w-0 flex-col border-r border-[#f0f2f5] bg-white md:w-[380px] md:min-w-[380px] z-40 shadow-[4px_0_24px_rgba(0,0,0,0.02)]">
       {/* Premium Header */}
       <div className="flex h-[80px] items-center justify-between px-6 bg-white/40 backdrop-blur-3xl sticky top-0 z-50">
         <div 

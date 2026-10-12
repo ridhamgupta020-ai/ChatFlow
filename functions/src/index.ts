@@ -8,7 +8,7 @@ import { logger } from 'firebase-functions';
 const app = initializeApp();
 
 const geminiApiKey = defineSecret('GEMINI_API_KEY');
-const database = getFirestore(app, 'ai-studio-e316c560-bff4-411c-9095-0c6d6acbe77d');
+const database = getFirestore(app, 'ai-studio-e316c560-bff4-411c-9095-0c6d6acbe77f');
 const maxTextLength = 4000;
 
 type AiOperation =
@@ -37,7 +37,11 @@ export const aiAssist = onCall(
       return await runAiOperation(ai, operation, payload);
     } catch (error) {
       if (error instanceof HttpsError) throw error;
-      logger.error('AI operation failed', { operation, uid: request.auth.uid, error });
+      logger.error('AI operation failed', {
+        operation,
+        uid: request.auth.uid,
+        errorName: error instanceof Error ? error.name : 'UnknownError',
+      });
       throw new HttpsError('internal', 'The AI request could not be completed.');
     }
   },

@@ -17,6 +17,7 @@ npm ci
 npm ci --prefix functions
 npm run lint
 npm run build
+npm run test:rules
 npm run dev
 ```
 
@@ -27,7 +28,7 @@ The Firebase web SDK configuration is read from `firebase-applet-config.json`. F
 ## Firebase configuration
 
 1. Enable **Google** under Firebase Authentication → Sign-in method, and add your local and deployed app domains to the authorized domains list.
-2. Create the Firestore database named `ai-studio-e316c560-bff4-411c-9095-0c6d6acbe77d`, or update the database ID consistently in `firebase.json`, `firebase-applet-config.json`, `functions/src/index.ts`, and `storage.rules`.
+2. Use the existing Firestore database named `ai-studio-e316c560-bff4-411c-9095-0c6d6acbe77f`, which is configured in `firebase-applet-config.json`. If changing projects, update the database ID consistently in `firebase.json`, `firebase-applet-config.json`, `functions/src/index.ts`, and `storage.rules`.
 3. Ensure Firebase Storage is enabled for the configured bucket.
 4. Select the Firebase project in the CLI:
 
@@ -74,10 +75,11 @@ npm run lint                # TypeScript check
 npm run build               # Production web build
 npm run preview             # Preview the production build locally
 npm run start               # Serve the built app
+npm run test:rules            # Firestore security rules tests using the emulator
 npm run build --prefix functions  # Compile Firebase Functions
 ```
 
-There is no test suite in the repository yet. `npm run lint` and `npm run build` are the current automated checks.
+`npm run test:rules` starts the Firestore emulator and checks participant-only chat access, message creation, sender-only edits/deletes, and protection against client-side membership changes. `npm run lint` and `npm run build` validate the client; `npm --prefix functions run build` validates the callable Functions code.
 
 ## Data and security notes
 
@@ -86,6 +88,7 @@ There is no test suite in the repository yet. `npm run lint` and `npm run build`
 - Existing messages that already contain Firebase download-token URLs remain readable for backwards compatibility. Those old URLs are bearer links; if one has been shared outside the conversation, rotate or remove that file's download token in Firebase Storage.
 - On a user's next sign-in, the client moves legacy profile email and notification tokens into that user's private subcollection and removes them from the publicly discoverable profile document. Users who have not signed in since this change still need this migration.
 - AI callable requests require Firebase authentication and are limited to 10 requests per minute and 100 per day per user. Chat message writes use Firebase Security Rules for membership and schema validation; application-level per-user message rate limiting is not yet implemented.
+- User-invoked AI actions send the selected message text to Google's Gemini service for processing. Incoming messages are not automatically sent to Gemini for smart replies.
 - This app does not implement end-to-end encryption. Firebase access controls protect data in transit and at rest as provided by the configured Firebase services.
 
 ## Deployment
@@ -97,6 +100,7 @@ npm ci
 npm ci --prefix functions
 npm run lint
 npm run build
+npm --prefix functions run build
 firebase deploy --only firestore:rules,storage,functions
 ```
 

@@ -3,7 +3,7 @@ rules_version = '2';
 service firebase.storage {
   match /b/{bucket}/o {
     function isChatParticipant(chatId) {
-      let chatPath = /databases/ai-studio-e316c560-bff4-411c-9095-0c6d6acbe77d/documents/chats/$(chatId);
+      let chatPath = /databases/ai-studio-e316c560-bff4-411c-9095-0c6d6acbe77f/documents/chats/$(chatId);
       return request.auth != null &&
         firestore.exists(chatPath) &&
         request.auth.uid in firestore.get(chatPath).data.participants;
