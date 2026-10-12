@@ -1,0 +1,9 @@
+{
+  "name": "Chatty AI",
+  "description": "A premium AI-powered messenger with smart replies, chat summarization, message threading, reactions, and productivity task conversion.",
+  "requestFramePermissions": [
+    "camera",
+    "microphone"
+  ],
+  "majorCapabilities": []
+}

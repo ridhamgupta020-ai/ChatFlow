@@ -1,0 +1,182 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // 0. Global Safety Net
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // --- Helpers ---
+    function isSignedIn() { 
+      return request.auth != null && 
+             (request.auth.token.email_verified == true || request.auth.token.firebase.sign_in_provider == 'anonymous'); 
+    }
+    function isOwner(uid) { return isSignedIn() && request.auth.uid == uid; }
+    function isValidId(id) { return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$'); }
+    function incoming() { return request.resource.data; }
+    function existing() { return resource.data; }
+
+    // Helper to check if a user is a participant of a chat
+    function isParticipantOfChat(chatId) {
+      return isSignedIn() && (request.auth.uid in get(/databases/$(database)/documents/chats/$(chatId)).data.participants);
+    }
+
+    // --- User Rules ---
+    match /users/{userId} {
+      function isValidUser(data) {
+        return data.uid is string && data.uid.size() <= 128 &&
+               data.displayName is string && data.displayName.size() <= 100 &&
+               data.email is string && data.email.size() <= 100 &&
+               data.isOnline is bool &&
+               (data.get('username', '') is string && data.get('username', '').size() <= 50) &&
+               (data.get('bio', '') is string && data.get('bio', '').size() <= 1000) &&
+               (data.get('statusMessage', '') is string && data.get('statusMessage', '').size() <= 500) &&
+               (data.get('statusEmoji', '') is string && data.get('statusEmoji', '').size() <= 10) &&
+               (data.get('availability', 'online') in ['online', 'busy', 'away', 'offline']) &&
+               (data.get('fcmTokens', []) is list);
+      }
+
+      function hasRequiredUserFields(data) {
+        return data.keys().hasAll(['uid', 'displayName', 'email', 'isOnline', 'lastSeen']);
+      }
+
+      allow get: if isSignedIn() && isValidId(userId);
+      allow list: if isSignedIn(); // Allow listing users to find contacts
+
+      allow create: if isOwner(userId) && hasRequiredUserFields(incoming()) && isValidUser(incoming());
+      allow update: if isOwner(userId) && isValidUser(incoming()) && 
+                    incoming().diff(existing()).affectedKeys().hasAny(['displayName', 'photoURL', 'bannerURL', 'isOnline', 'lastSeen', 'statusMessage', 'fcmTokens', 'username', 'bio', 'statusEmoji', 'availability', 'socialLinks', 'interests', 'privacySettings']);
+    }
+
+    // --- Username Rules ---
+    match /usernames/{username} {
+      allow get: if isSignedIn();
+      allow create: if isSignedIn() && incoming().uid == request.auth.uid && username.size() <= 50;
+      allow delete: if isSignedIn() && existing().uid == request.auth.uid;
+    }
+
+    // --- Chat Rules ---
+    match /chats/{chatId} {
+      function isParticipant() {
+        return isSignedIn() && (request.auth.uid in resource.data.participants);
+      }
+      
+      function isValidChat(data) {
+        return data.participants is list &&
+               data.participants.size() >= 2 && data.participants.size() <= 100 &&
+               data.type in ['one-to-one', 'group'];
+      }
+
+      function hasRequiredChatFields(data) {
+        return data.keys().hasAll(['chatId', 'participants', 'type', 'createdAt']);
+      }
+
+      allow get: if isSignedIn() && isParticipant();
+      allow list: if isSignedIn() && (request.auth.uid in resource.data.participants);
+      
+      allow create: if isSignedIn() && hasRequiredChatFields(incoming()) && isValidChat(incoming()) && (request.auth.uid in incoming().participants);
+      allow update: if isParticipant() && 
+                    incoming().diff(existing()).affectedKeys().hasAny(['lastMessage', 'photoURL', 'name', 'unreadCount', 'chatId']);
+
+      // --- Message Rules ---
+      match /messages/{messageId} {
+        function isValidMessage(data) {
+          return data.senderId == request.auth.uid &&
+                 data.chatId == chatId &&
+                 data.type in ['text', 'image', 'video', 'file'] &&
+                 data.status in ['sent', 'delivered', 'read'] &&
+                 (data.get('mediaUrl', '') is string && data.get('mediaUrl', '').size() <= 1000);
+        }
+
+        function hasRequiredMessageFields(data) {
+          return data.keys().hasAll(['messageId', 'chatId', 'senderId', 'timestamp', 'status', 'type']);
+        }
+
+        allow get, list: if isParticipantOfChat(chatId);
+        allow create: if isParticipantOfChat(chatId) && hasRequiredMessageFields(incoming()) && isValidMessage(incoming());
+        allow update: if isParticipantOfChat(chatId) && 
+                      incoming().diff(existing()).affectedKeys().hasAny(['status', 'messageId']);
+      }
+
+      // --- Typing Rules ---
+      match /typing/{userId} {
+        allow read: if isParticipantOfChat(chatId);
+        allow write: if isOwner(userId);
+      }
+
+      // --- Whiteboard Rules ---
+      match /whiteboard_strokes/{strokeId} {
+        function isValidStroke(data) {
+          return data.senderId == request.auth.uid &&
+                 data.chatId == chatId &&
+                 data.points is list &&
+                 data.points.size() <= 1500 && // Slightly more for detailed 3D curves
+                 data.color is string &&
+                 data.width is number;
+        }
+
+        function hasRequiredStrokeFields(data) {
+          return data.keys().hasAll(['strokeId', 'chatId', 'senderId', 'points', 'color', 'width', 'timestamp']);
+        }
+
+        allow read, list: if isParticipantOfChat(chatId);
+        allow create: if isParticipantOfChat(chatId) && hasRequiredStrokeFields(incoming()) && isValidStroke(incoming());
+        allow delete: if isParticipantOfChat(chatId); // Allow anyone in chat to clear or delete a stroke for collaboration
+      }
+    }
+
+    // --- Call Rules ---
+    match /calls/{callId} {
+      function isCallParticipant() {
+        return isSignedIn() && (request.auth.uid in resource.data.participants);
+      }
+
+      function isValidCallSchema(data) {
+        return data.participants is list &&
+               data.participants.size() >= 2 &&
+               data.participants.size() <= 20 &&
+               data.type in ['audio', 'video'] &&
+               data.status in ['ringing', 'connected', 'ended', 'missed', 'rejected'] &&
+               data.isGroup is bool &&
+               (data.startTime == request.time || data.startTime is timestamp);
+      }
+
+      function hasRequiredCallFields(data) {
+        return data.keys().hasAll(['callId', 'hostId', 'participants', 'type', 'status', 'startTime', 'isGroup']);
+      }
+
+      allow get: if isSignedIn() && isValidId(callId) && (request.auth.uid in resource.data.participants);
+      allow list: if isSignedIn() && (request.auth.uid in resource.data.participants);
+      
+      allow create: if isSignedIn() && 
+                    hasRequiredCallFields(incoming()) && 
+                    isValidCallSchema(incoming()) && 
+                    incoming().callId == callId &&
+                    incoming().hostId == request.auth.uid &&
+                    (request.auth.uid in incoming().participants);
+
+      allow update: if isCallParticipant() && 
+                    isValidCallSchema(incoming()) && (
+                      // Transition Action: Change status
+                      incoming().diff(existing()).affectedKeys().hasOnly(['status', 'endTime', 'duration', 'summary', 'callId'])
+                    );
+
+      // --- Signaling Rules ---
+      match /signaling/{signalId} {
+        function isValidSignal(data) {
+          return data.from == request.auth.uid &&
+                 data.to is string &&
+                 data.type in ['offer', 'answer', 'candidate'] &&
+                 data.payload is string &&
+                 data.payload.size() <= 65536 &&
+                 (data.timestamp == request.time || data.timestamp is timestamp);
+        }
+
+        allow read, list: if isSignedIn() && (resource.data.to == request.auth.uid || resource.data.from == request.auth.uid);
+        allow create: if isSignedIn() && isValidSignal(incoming()) && 
+                      (request.auth.uid in get(/databases/$(database)/documents/calls/$(callId)).data.participants);
+      }
+    }
+  }
+}
