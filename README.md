@@ -93,7 +93,7 @@ npm run build --prefix functions  # Compile Firebase Functions
 
 ## Deployment
 
-Build and deploy the web app using your preferred static hosting provider:
+Build and deploy the web app using your preferred static hosting provider. Vercel is configured to use `npm ci` so each deployment installs the exact dependencies from the lockfile:
 
 ```bash
 npm ci
